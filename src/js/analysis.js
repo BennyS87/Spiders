@@ -213,6 +213,67 @@ function spidersAnalysisCore() {
     }
   }
 
+  // ---------------- t-SNE (exact, for up to ~1000 points) ----------------
+  function tsne(X, n, d, init, rand, progress) {
+    const perp = Math.min(30, Math.max(3, (n - 1) / 3));
+    const D = new Float64Array(n * n);
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { const v = dist2(X, d, i, X, j); D[i * n + j] = v; D[j * n + i] = v; }
+    // conditional probabilities, with a binary search on precision for the target perplexity
+    const Pm = new Float64Array(n * n), H = Math.log(perp);
+    for (let i = 0; i < n; i++) {
+      let beta = 1, lo = -Infinity, hi = Infinity;
+      for (let it = 0; it < 50; it++) {
+        let sum = 0, hsum = 0;
+        for (let j = 0; j < n; j++) { if (j === i) { Pm[i * n + j] = 0; continue; } const pj = Math.exp(-D[i * n + j] * beta); Pm[i * n + j] = pj; sum += pj; hsum += D[i * n + j] * pj; }
+        sum = sum || 1e-12;
+        const ent = Math.log(sum) + beta * hsum / sum;
+        for (let j = 0; j < n; j++) Pm[i * n + j] /= sum;
+        if (Math.abs(ent - H) < 1e-4) break;
+        if (ent > H) { lo = beta; beta = hi === Infinity ? beta * 2 : (beta + hi) / 2; }
+        else { hi = beta; beta = lo === -Infinity ? beta / 2 : (beta + lo) / 2; }
+      }
+    }
+    const Psym = D; // reuse memory
+    for (let i = 0; i < n; i++) for (let j = i; j < n; j++) { const v = Math.max(1e-12, (Pm[i * n + j] + Pm[j * n + i]) / (2 * n)); Psym[i * n + j] = v; Psym[j * n + i] = v; }
+    const Q = Pm; // reuse memory for the Student-t numerators
+    const Y = new Float64Array(n * 2), gains = new Float64Array(n * 2).fill(1), vel = new Float64Array(n * 2), grad = new Float64Array(n * 2);
+    // start from the PCA layout, scaled small, so results repeat
+    for (let i = 0; i < n * 2; i++) Y[i] = ((init[i] || 0) - 0.5) * 1e-2 + (rand() - 0.5) * 1e-4;
+    const iters = n > 700 ? 320 : 420, lr = Math.max(100, n / 12);
+    for (let it = 0; it < iters; it++) {
+      const exag = it < 90 ? 12 : 1, mom = it < 90 ? 0.5 : 0.8;
+      let qsum = 0;
+      for (let i = 0; i < n; i++) {
+        const yi0 = Y[i * 2], yi1 = Y[i * 2 + 1];
+        for (let j = i + 1; j < n; j++) {
+          const a = yi0 - Y[j * 2], b = yi1 - Y[j * 2 + 1];
+          const q = 1 / (1 + a * a + b * b);
+          Q[i * n + j] = q; qsum += 2 * q;
+        }
+      }
+      grad.fill(0);
+      for (let i = 0; i < n; i++) {
+        const yi0 = Y[i * 2], yi1 = Y[i * 2 + 1];
+        for (let j = i + 1; j < n; j++) {
+          const q = Q[i * n + j];
+          const m = (exag * Psym[i * n + j] - q / qsum) * q;
+          const a = (yi0 - Y[j * 2]) * m, b = (yi1 - Y[j * 2 + 1]) * m;
+          grad[i * 2] += a; grad[i * 2 + 1] += b; grad[j * 2] -= a; grad[j * 2 + 1] -= b;
+        }
+      }
+      for (let i = 0; i < n * 2; i++) {
+        const g = 4 * grad[i];
+        gains[i] = (g > 0) !== (vel[i] > 0) ? gains[i] + 0.2 : Math.max(0.01, gains[i] * 0.8);
+        vel[i] = mom * vel[i] - lr * gains[i] * g;
+        Y[i] += vel[i];
+      }
+      if ((it & 15) === 0) progress(it / iters);
+    }
+    return Y;
+  }
+
+  const stftCache = new Map();
+
   // ======================= main entry =======================
   function analyse(input, progress) {
     progress = progress || (() => { });
@@ -222,16 +283,20 @@ function spidersAnalysisCore() {
     const rand = rng(st.seed * 7919 + len);
     const MAX_FRAMES = 1024;
 
-    // ---- STFT -> log-mel per hop ----
+    // ---- STFT -> log-mel per hop (cached per sound, so re-slicing is quick) ----
     const N = sr >= 32000 ? 2048 : 1024, hop = N / 4, NB = 40;
     const bank = melBank(N, sr, NB, 30, Math.min(16000, sr / 2 - 100));
     const nh = Math.max(1, Math.ceil(len / hop));
-    const logmel = new Float32Array(nh * NB);
-    const flux = new Float32Array(nh);
-    const hopDb = new Float32Array(nh);
+    const bins = N / 2 + 1;
+    const ckey = input.cacheKey || (input.settings && input.settings.cacheKey);
+    const ck = ckey ? ckey + '|' + len + '|' + sr : null;
+    const cached = ck ? stftCache.get(ck) : null;
+    const logmel = cached ? cached.logmel : new Float32Array(nh * NB);
+    const flux = cached ? cached.flux : new Float32Array(nh);
+    const hopDb = cached ? cached.hopDb : new Float32Array(nh);
+    if (!cached) {
     const re = new Float64Array(N), im = new Float64Array(N);
     const { win } = fftTables(N);
-    const bins = N / 2 + 1;
     let prev = new Float32Array(bins), cur = new Float32Array(bins);
     const pow = new Float64Array(bins);
     for (let h = 0; h < nh; h++) {
@@ -278,6 +343,8 @@ function spidersAnalysisCore() {
         flux[h] = 0.5 * flux[h] / (bins * 0.05) + fl;
       }
     }
+    if (ck) { stftCache.set(ck, { logmel, flux, hopDb }); while (stftCache.size > 4) stftCache.delete(stftCache.keys().next().value); }
+    } // end of uncached STFT
 
     // ---- slicing ----
     let bounds = [0];
@@ -332,9 +399,17 @@ function spidersAnalysisCore() {
         for (let p = L; p < len - L * 0.25; p += L) bounds.push(Math.round(p));
       }
     }
-    const n = bounds.length;
+    // frames as [start, end) sample ranges; manual cells may leave gaps between them
+    let fs, fe;
+    if (st.mode === 'manual') {
+      const regs = (st.regions || []).map(r => [Math.max(0, Math.round(r[0] * sr)), Math.min(len, Math.round(r[1] * sr))]).filter(r => r[1] - r[0] >= sr * 0.005).sort((a, b) => a[0] - b[0]).slice(0, MAX_FRAMES);
+      fs = regs.map(r => r[0]); fe = regs.map(r => r[1]);
+    } else {
+      fs = bounds.slice(); fe = bounds.map((b, i) => i + 1 < bounds.length ? bounds[i + 1] : len);
+    }
+    const n = fs.length;
     const starts = new Float32Array(n), ends = new Float32Array(n);
-    for (let i = 0; i < n; i++) { starts[i] = bounds[i] / sr; ends[i] = (i + 1 < n ? bounds[i + 1] : len) / sr; }
+    for (let i = 0; i < n; i++) { starts[i] = fs[i] / sr; ends[i] = fe[i] / sr; }
     progress(0.55, 'Measuring each frame');
 
     // ---- per-frame features ----
@@ -346,14 +421,14 @@ function spidersAnalysisCore() {
     const mean = new Float64Array(NB);
     let maxRms = -200;
     for (let i = 0; i < n; i++) {
-      const s0 = bounds[i], s1 = i + 1 < n ? bounds[i + 1] : len;
+      const s0 = fs[i], s1 = fe[i];
       let e = 0; for (let q = s0; q < s1; q++) e += mono[q] * mono[q];
       rmsDb[i] = 10 * Math.log10(e / Math.max(1, s1 - s0) + 1e-12);
       if (rmsDb[i] > maxRms) maxRms = rmsDb[i];
     }
     const silentThr = Math.max(-72, maxRms - 48);
     for (let i = 0; i < n; i++) {
-      const s0 = bounds[i], s1 = i + 1 < n ? bounds[i + 1] : len;
+      const s0 = fs[i], s1 = fe[i];
       let h0 = Math.ceil(s0 / hop), h1 = Math.floor((s1 - 1) / hop);
       if (h1 < h0) { h0 = h1 = Math.min(nh - 1, Math.round((s0 + s1) / 2 / hop)); }
       mean.fill(0);
@@ -403,7 +478,7 @@ function spidersAnalysisCore() {
 
     // active (non-silent) frames
     const active = [];
-    for (let i = 0; i < n; i++) if (rmsDb[i] > silentThr) active.push(i);
+    for (let i = 0; i < n; i++) if (rmsDb[i] > silentThr || st.mode === 'manual') active.push(i);
     const na = active.length;
     const cluster = new Int16Array(n).fill(-1);
     const xs = new Float32Array(n).fill(NaN), ys = new Float32Array(n).fill(NaN);
@@ -478,7 +553,23 @@ function spidersAnalysisCore() {
       rankBlend(0, 0.55); rankBlend(1, 0.55);
       const pos = new Float64Array(na * 2), target = new Float64Array(na * 2);
       const r0 = Math.sqrt(A * H / Math.max(1, na)) * 0.98;
-      if (st.layout === 'map') {
+      if (st.layout === 'cells') {
+        // a landscape: t-SNE keeps close timbres close, so similar frames crowd into small cells
+        // and unusual frames sit apart with big cells of their own
+        const Y = tsne(X, na, FD, P, rand, (f) => progress(0.86 + 0.12 * f, 'Spinning the cells'));
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (let a = 0; a < na; a++) { x0 = Math.min(x0, Y[a * 2]); x1 = Math.max(x1, Y[a * 2]); y0 = Math.min(y0, Y[a * 2 + 1]); y1 = Math.max(y1, Y[a * 2 + 1]); }
+        const m = 0.04, sc = Math.min((A - 2 * m) / ((x1 - x0) || 1), (H - 2 * m) / ((y1 - y0) || 1));
+        const ox = (A - (x1 - x0) * sc) / 2, oy = (H - (y1 - y0) * sc) / 2;
+        for (let a = 0; a < na; a++) { pos[a * 2] = ox + (Y[a * 2] - x0) * sc; pos[a * 2 + 1] = oy + (Y[a * 2 + 1] - y0) * sc; }
+        // pull apart exact duplicates so every frame keeps a cell
+        const seen = new Map();
+        for (let a = 0; a < na; a++) {
+          const key = Math.round(pos[a * 2] * 2000) + ',' + Math.round(pos[a * 2 + 1] * 2000);
+          const c = seen.get(key) || 0; seen.set(key, c + 1);
+          if (c) { const ang = c * 2.39996, r = 0.0015 * Math.sqrt(c); pos[a * 2] += r * Math.cos(ang); pos[a * 2 + 1] += r * Math.sin(ang); }
+        }
+      } else if (st.layout === 'map') {
         const m = r0 * 0.8;
         for (let a = 0; a < na; a++) {
           target[a * 2] = m + P[a * 2] * (A - 2 * m);
@@ -544,7 +635,7 @@ function spidersAnalysisCore() {
     progress(1, 'Done');
     return {
       n, k, starts, ends, cluster, x: xs, y: ys, rmsDb, centroid, spec, specBands: SPEC,
-      sizes, typical, sectors, layout: st.layout === 'map' ? 'map' : 'web', aspect: st.aspect, peaks, duration: len / sr, silentThr
+      sizes, typical, sectors, layout: st.layout === 'map' || st.layout === 'cells' ? st.layout : 'web', aspect: st.aspect, peaks, duration: len / sr, silentThr, gaps: st.mode === 'manual'
     };
   }
 

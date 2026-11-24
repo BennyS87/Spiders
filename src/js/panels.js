@@ -82,7 +82,7 @@
     const change = (fn) => { fn(); clearTimeout(remapTimer); remapTimer = setTimeout(() => { app.commit('Mapping settings'); app.reanalyse(s.id); }, 350); renderLibDetail(); };
 
     const b1 = el('div', 'block'); b1.appendChild(el('h3', '', 'Slicing'));
-    b1.appendChild(seg([['transients', 'Transients', 'Cut where each new sound starts'], ['grid', 'Grid', 'Equal slices of a fixed length'], ['beats', 'Beats', 'Slices in time with the project tempo']], st.mode, v => change(() => { st.mode = v; }), true));
+    b1.appendChild(seg([['transients', 'Transients', 'Cut where each new sound starts'], ['grid', 'Grid', 'Equal slices of a fixed length'], ['beats', 'Beats', 'Slices in time with the project tempo'], ['manual', 'Manual', 'Drag along the strip under the map to cut your own cells']], st.mode, v => change(() => { if (v === 'manual') app.seedRegions(s.id); st.mode = v; }), true));
     if (st.mode === 'transients') {
       const r1 = row('Sensitivity', range(0, 1, 0.01, st.sensitivity, v => { st.sensitivity = v; r1._val.textContent = Math.round(v * 100) + '%'; }, () => change(() => { })), Math.round(st.sensitivity * 100) + '%');
       const r2 = row('Longest', range(50, 2000, 10, st.maxSliceMs, v => { st.maxSliceMs = v; r2._val.textContent = Math.round(v) + ' ms'; }, () => change(() => { })), Math.round(st.maxSliceMs) + ' ms');
@@ -91,13 +91,17 @@
     } else if (st.mode === 'grid') {
       const r = row('Slice length', range(20, 2000, 5, st.sliceMs, v => { st.sliceMs = v; r._val.textContent = Math.round(v) + ' ms'; }, () => change(() => { })), Math.round(st.sliceMs) + ' ms');
       b1.appendChild(r);
+    } else if (st.mode === 'manual') {
+      b1.appendChild(el('div', 'hint', `${(s.regions || []).length} cells. Drag on the strip under the map to cut a new cell, drag a cell's edge to resize it, right-click a cell to edit or delete it.`));
+      const cb = el('button', 'small ghost', 'Clear all cells'); cb.onclick = () => app.clearRegions(s.id);
+      b1.appendChild(cb);
     } else {
       b1.appendChild(row('Slice every', select(['1/4', '1/8', '1/8T', '1/16', '1/16T', '1/32'], st.beatDivName || '1/16', v => change(() => { st.beatDivName = v; st.beatDiv = SP.DIVS[v]; }))));
       b1.appendChild(el('div', 'hint', `Uses the project tempo (${p.bpm} BPM). Set the BPM to match the sound first.`));
     }
     const groups = [['0', 'Auto']].concat(Array.from({ length: 23 }, (_, i) => [String(i + 2), String(i + 2)]));
     b1.appendChild(row('Timbre groups', select(groups, String(st.clusters || 0), v => change(() => { st.clusters = +v; }))));
-    b1.appendChild(row('Layout', seg([['web', 'Web', 'One wedge per timbre group, time spirals out from the centre'], ['map', 'Map', 'Similar sounds sit close together']], st.layout, v => change(() => { st.layout = v; }))));
+    b1.appendChild(row('Layout', seg([['web', 'Web', 'One wedge per timbre group, time spirals out from the centre'], ['map', 'Map', 'Similar sounds sit close together'], ['cells', 'Cells', 'A landscape: similar timbres crowd into small cells, unusual sounds get big ones. Play it by dragging.']], st.layout, v => change(() => { app.chooseLayout(s, v); }))));
     const rb = el('button', 'small', s._busy ? 'Mapping…' : 'Re-map now'); rb.disabled = !!s._busy; rb.onclick = () => app.reanalyse(s.id);
     const tb = el('div', 'toolbar'); tb.appendChild(rb); b1.appendChild(tb);
     box.appendChild(b1);
@@ -138,7 +142,8 @@
     const b1 = el('button', 'small', 'Put on selected pad'); b1.onclick = () => app.assignPad(app.selPad, sel.sampleId, i);
     const b2 = el('button', 'small', 'Place at playhead'); b2.onclick = () => app.placeAtPlayhead(sel.sampleId, i);
     const b3 = el('button', 'small', 'Export WAV…'); b3.onclick = () => app.exportFrame(sel.sampleId, i);
-    tb.append(b1, b2, b3); box.appendChild(tb);
+    const b4 = el('button', 'small', 'Edit cell…'); b4.onclick = () => openCellEditor(sel.sampleId, i);
+    tb.append(b4, b1, b2, b3); box.appendChild(tb);
   }
 
   // ======================= right panel =======================
@@ -237,18 +242,28 @@
   function renderSound(body, tr) {
     const app = SP.app;
     const s = tr.sound;
-    const modeHints = { oneshot: 'Each hit plays the whole frame, however short the press.', gate: 'Plays while the key is held, up to the end of the frame.', loop: 'Loops the frame for as long as the key is held: good for drones and pads.' };
+    const modeHints = { oneshot: 'Each hit plays the whole frame, however short the press.', gate: 'Plays while the key is held, up to the end of the frame.', loop: 'Loops the frame for as long as the key is held: good for drones and pads.', spectral: 'Freezes the sound at a point and holds it, with no attack in between. Drag across the map and it flows smoothly from cell to cell.' };
     const r = el('div', 'row'); r.appendChild(el('label', '', 'Playback'));
-    r.appendChild(seg([['oneshot', 'One shot'], ['gate', 'Gate'], ['loop', 'Loop']], s.mode, v => { s.mode = v; app.commit('Playback mode'); renderPanel(); }));
+    r.appendChild(seg([['oneshot', 'One shot'], ['gate', 'Gate'], ['loop', 'Loop'], ['spectral', 'Spectral', 'Holds any point of the sound as a steady texture and glides between cells']], s.mode, v => { s.mode = v; app.commit('Playback mode'); renderPanel(); }));
     body.appendChild(r);
     body.appendChild(el('div', 'hint', modeHints[s.mode] || ''));
-    const rv = el('div', 'row'); rv.appendChild(el('label', '', 'Direction'));
-    rv.appendChild(seg([[false, 'Forward'], [true, 'Reverse']], !!s.reverse, v => { s.reverse = v; app.commit('Reverse'); renderPanel(); }));
-    body.appendChild(rv);
+    const spectral = s.mode === 'spectral';
+    if (!spectral) {
+      const rv = el('div', 'row'); rv.appendChild(el('label', '', 'Direction'));
+      rv.appendChild(seg([[false, 'Forward'], [true, 'Reverse']], !!s.reverse, v => { s.reverse = v; app.commit('Reverse'); renderPanel(); }));
+      body.appendChild(rv);
+    } else {
+      const rq = el('div', 'row'); rq.appendChild(el('label', '', 'Quality'));
+      rq.appendChild(seg([['clean', 'Clean'], ['lofi', 'Lo-fi', 'Coarser, crunchier spectrum']], s.quality || 'clean', v => { s.quality = v; app.commit('Quality'); renderPanel(); }));
+      body.appendChild(rq);
+    }
     const k = el('div', 'knobs');
-    for (const d of SP.SOUND_PARAMS) k.appendChild(knobFor(d, () => s[d.key], v => { s[d.key] = v; app.touch(); }, () => app.commit(d.label)));
+    const params = spectral ? SP.SOUND_PARAMS.filter(d => !['length', 'scatter'].includes(d.key)).concat(SP.SPECTRAL_PARAMS) : SP.SOUND_PARAMS;
+    for (const d of params) k.appendChild(knobFor(d, () => s[d.key] == null ? d.def : s[d.key], v => { s[d.key] = v; app.touch(); app.updateLiveSpectral(); }, () => app.commit(d.label)));
     body.appendChild(k);
-    body.appendChild(el('div', 'hint', '<b>Length</b> sets how much of each frame plays: 1× is the frame itself, more runs on into the sound after it. <b>Scatter</b> is the chance each hit swaps in a different frame from the same timbre group. <b>Velocity</b> sets how much key velocity changes the level.'));
+    body.appendChild(el('div', 'hint', spectral
+      ? '<b>Spread</b> blends neighbouring cells together: low is precise, high is a smooth blur. <b>Glide</b> is how long the sound takes to flow from one point to the next. <b>Tilt</b> brightens or darkens. <b>Texture</b> loosens the phase for a breathier, noisier hold. <b>Shimmer</b> makes the partials flicker. <b>Width</b> spreads it across the stereo field.'
+      : '<b>Length</b> sets how much of each frame plays: 1× is the frame itself, more runs on into the sound after it. <b>Scatter</b> is the chance each hit swaps in a different frame from the same timbre group. <b>Velocity</b> sets how much key velocity changes the level.'));
     body.appendChild(el('h3', '', 'Track'));
     const k2 = el('div', 'knobs');
     k2.appendChild(knobFor({ label: 'Volume', min: 0, max: 1.25, def: 0.85, fmt: SP.fmt.pct }, () => tr.volume, v => { tr.volume = v; app.touch(); }, () => { app.commit('Volume'); app.timeline.renderHeaders(); }));
@@ -263,21 +278,21 @@
     add.style.width = '100%';
     body.appendChild(add);
     if (!tr.effects.length) body.appendChild(el('div', 'hint', 'Effects run top to bottom. The same set as Reel Studio and Orbit: EQ, filter, compressor, saturation, distortion, phaser / flanger / chorus, echo, reverb, trance gate and vocoder. You can add any of them more than once.'));
-    tr.effects.forEach((fx, idx) => body.appendChild(fxCard(tr, fx, idx)));
+    tr.effects.forEach((fx, idx) => body.appendChild(fxCard(tr.effects, fx, idx, renderPanel)));
   }
 
-  function fxCard(tr, fx, idx) {
+  function fxCard(list, fx, idx, rerender) {
     const app = SP.app, T = SP.FX.TYPES[fx.type];
     const card = el('div', 'fxcard' + (fx.on ? '' : ' off'));
     const head = el('div', 'fxhead');
     const sw = el('button', 'switch' + (fx.on ? ' on' : '')); sw.title = fx.on ? 'Switch off' : 'Switch on';
-    sw.onclick = () => { fx.on = !fx.on; app.commit(fx.on ? 'Effect on' : 'Effect off'); renderPanel(); };
+    sw.onclick = () => { fx.on = !fx.on; app.commit(fx.on ? 'Effect on' : 'Effect off'); rerender(); };
     const up = el('button', 'ghost', '↑'); up.title = 'Earlier'; up.disabled = idx === 0;
-    up.onclick = () => { tr.effects.splice(idx - 1, 0, tr.effects.splice(idx, 1)[0]); app.commit('Reorder effects'); renderPanel(); };
-    const dn = el('button', 'ghost', '↓'); dn.title = 'Later'; dn.disabled = idx === tr.effects.length - 1;
-    dn.onclick = () => { tr.effects.splice(idx + 1, 0, tr.effects.splice(idx, 1)[0]); app.commit('Reorder effects'); renderPanel(); };
+    up.onclick = () => { list.splice(idx - 1, 0, list.splice(idx, 1)[0]); app.commit('Reorder effects'); rerender(); };
+    const dn = el('button', 'ghost', '↓'); dn.title = 'Later'; dn.disabled = idx === list.length - 1;
+    dn.onclick = () => { list.splice(idx + 1, 0, list.splice(idx, 1)[0]); app.commit('Reorder effects'); rerender(); };
     const rm = el('button', 'ghost', '×'); rm.title = 'Remove';
-    rm.onclick = () => { tr.effects.splice(idx, 1); app.commit('Remove effect'); renderPanel(); };
+    rm.onclick = () => { list.splice(idx, 1); app.commit('Remove effect'); rerender(); };
     head.append(sw, el('b', '', T.name), up, dn, rm);
     card.appendChild(head);
     const body = el('div', 'fxbody');
@@ -285,7 +300,7 @@
       const ch = el('div', 'choices');
       for (const c of T.choices) {
         const f = el('div', 'field'); f.appendChild(el('label', '', c.label));
-        f.appendChild(select(c.options, fx.p[c.key], v => { fx.p[c.key] = v; app.commit(c.label); if (fx.type === 'gate') renderPanel(); }));
+        f.appendChild(select(c.options, fx.p[c.key], v => { fx.p[c.key] = v; app.commit(c.label); rerender(); }));
         ch.appendChild(f);
       }
       body.appendChild(ch);
@@ -424,6 +439,135 @@
     d.classList.add('hit'); clearTimeout(d._t); d._t = setTimeout(() => d.classList.remove('hit'), 140);
   }
 
-  SP.Panels = { renderLibrary, renderLibDetail, renderFrameBlock, renderPanel, renderPadInfo, setProgress, flashPad };
+  // ======================= cell editor =======================
+  let cellEd = null;
+  function openCellEditor(sid, frame) {
+    const app = SP.app, an = app.analysis.get(sid), au = app.audio.get(sid);
+    if (!an || !au || frame < 0 || frame >= an.n) return;
+    app.selFrame = { sampleId: sid, frame };
+    const root = document.getElementById('modalRoot');
+    root.innerHTML = '';
+    const back = el('div', 'modal-back'), m = el('div', 'modal cellmodal');
+    back.appendChild(m); root.appendChild(back);
+    const close = () => { root.innerHTML = ''; cellEd = null; app.noteOff('celled'); app.map.invalidate(); renderFrameBlock(); };
+    back.addEventListener('pointerdown', e => { if (e.target === back) close(); });
+    cellEd = { sid, frame, close };
+    const render = () => {
+      const ed = app.cellEdit(sid, frame);
+      const c = an.cluster[frame];
+      m.innerHTML = '';
+      const head = el('div', 'cellhead');
+      head.innerHTML = `<span class="dot" style="background:${c >= 0 ? SP.clusterColor(c, an.k) : '#5b6478'}"></span><h2>Cell ${frame + 1}</h2><span class="sub">${SP.escape(app.sampleName(sid))} · ${c >= 0 ? 'group ' + (c + 1) : 'quiet cell'}${ed ? ' · edited' : ''}</span>`;
+      const prevB = el('button', 'small ghost', '‹'); prevB.title = 'Previous cell'; prevB.onclick = () => { close(); openCellEditor(sid, Math.max(0, frame - 1)); };
+      const nextB = el('button', 'small ghost', '›'); nextB.title = 'Next cell'; nextB.onclick = () => { close(); openCellEditor(sid, Math.min(an.n - 1, frame + 1)); };
+      const x = el('button', 'small ghost', 'Done'); x.onclick = close;
+      head.append(prevB, nextB, x);
+      m.appendChild(head);
+
+      // waveform with draggable bounds
+      const cur = ed || { start: an.starts[frame], end: an.ends[frame] };
+      const wave = el('canvas', 'cellwave');
+      m.appendChild(wave);
+      const info = el('div', 'cellinfo'); m.appendChild(info);
+      const view = (() => {
+        const len = Math.max(0.05, cur.end - cur.start);
+        const pad = Math.max(0.25, len * 1.5);
+        const a = Math.max(0, Math.min(an.starts[frame], cur.start) - pad), b = Math.min(an.duration, Math.max(an.ends[frame], cur.end) + pad);
+        return { a, b };
+      })();
+      const buf = au.buf;
+      function drawWave() {
+        const e2 = app.cellEdit(sid, frame) || cur;
+        const dpr = window.devicePixelRatio || 1, W = wave.clientWidth || 640, H = wave.clientHeight || 140;
+        wave.width = W * dpr; wave.height = H * dpr;
+        const g = wave.getContext('2d'); g.scale(dpr, dpr);
+        g.fillStyle = '#0a0c10'; g.fillRect(0, 0, W, H);
+        const xOf = t => (t - view.a) / (view.b - view.a) * W;
+        // neighbouring cell boundaries
+        g.fillStyle = 'rgba(223,231,242,0.12)';
+        for (let i = 0; i < an.n; i++) { if (an.starts[i] > view.a && an.starts[i] < view.b) g.fillRect(Math.round(xOf(an.starts[i])), 0, 1, H); }
+        // original bounds
+        g.fillStyle = 'rgba(255,255,255,0.05)'; g.fillRect(xOf(an.starts[frame]), 0, xOf(an.ends[frame]) - xOf(an.starts[frame]), H);
+        // selected snippet
+        g.fillStyle = 'rgba(255,92,138,0.16)'; g.fillRect(xOf(e2.start), 0, xOf(e2.end) - xOf(e2.start), H);
+        const d = buf.getChannelData(0), sr = buf.sampleRate, mid = H / 2;
+        for (let px = 0; px < W; px++) {
+          const t0 = view.a + (view.b - view.a) * px / W, t1 = view.a + (view.b - view.a) * (px + 1) / W;
+          let lo = 0, hi = 0;
+          for (let i = Math.floor(t0 * sr); i < Math.floor(t1 * sr) && i < d.length; i++) { if (d[i] < lo) lo = d[i]; if (d[i] > hi) hi = d[i]; }
+          const t = (t0 + t1) / 2, inside = t >= e2.start && t <= e2.end;
+          g.fillStyle = inside ? (c >= 0 ? SP.clusterColor(c, an.k) : '#9aa3b5') : '#3a4152';
+          g.fillRect(px, mid - hi * mid * 0.9, 1, Math.max(1, (hi - lo) * mid * 0.9));
+        }
+        for (const [t, lab] of [[e2.start, 'start'], [e2.end, 'end']]) {
+          const xx = xOf(t);
+          g.fillStyle = '#ff5c8a'; g.fillRect(xx - 1, 0, 2, H);
+          g.fillRect(lab === 'start' ? xx : xx - 10, 0, 10, 14);
+        }
+        info.innerHTML = `Snippet <b>${e2.start.toFixed(3)}–${e2.end.toFixed(3)} s</b> · ${Math.round((e2.end - e2.start) * 1000)} ms <span style="color:var(--dimmer)">(cell was ${Math.round((an.ends[frame] - an.starts[frame]) * 1000)} ms) · drag the pink edges, or drag inside to move the snippet</span>`;
+      }
+      let drag = null;
+      const tOf = (e) => { const r = wave.getBoundingClientRect(); return view.a + (view.b - view.a) * Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); };
+      wave.addEventListener('pointerdown', e => {
+        const e2 = app.ensureCellEdit(sid, frame);
+        const r = wave.getBoundingClientRect(), pxs = r.width / (view.b - view.a);
+        const t = tOf(e);
+        const ds = Math.abs((t - e2.start) * pxs), de = Math.abs((t - e2.end) * pxs);
+        wave.setPointerCapture(e.pointerId);
+        if (Math.min(ds, de) < 8) drag = { which: ds < de ? 'start' : 'end' };
+        else if (t > e2.start && t < e2.end) drag = { which: 'move', off: t - e2.start, len: e2.end - e2.start };
+        else drag = { which: t < e2.start ? 'start' : 'end' };
+        wave.dispatchEvent(new PointerEvent('pointermove', e));
+      });
+      wave.addEventListener('pointermove', e => {
+        const r = wave.getBoundingClientRect(), pxs = r.width / (view.b - view.a);
+        if (!drag) { const e2 = app.cellEdit(sid, frame) || cur, t = tOf(e); wave.style.cursor = Math.min(Math.abs((t - e2.start) * pxs), Math.abs((t - e2.end) * pxs)) < 8 ? 'ew-resize' : (t > e2.start && t < e2.end ? 'grab' : 'crosshair'); return; }
+        const e2 = app.cellEdit(sid, frame), t = tOf(e);
+        if (drag.which === 'start') e2.start = Math.max(0, Math.min(e2.end - 0.005, t));
+        else if (drag.which === 'end') e2.end = Math.min(an.duration, Math.max(e2.start + 0.005, t));
+        else { const s0 = Math.max(0, Math.min(an.duration - drag.len, t - drag.off)); e2.start = s0; e2.end = s0 + drag.len; }
+        app.syncCellBounds(sid, frame);
+        app.touch(); drawWave();
+      });
+      const up = () => { if (drag) { drag = null; app.commit('Cell length'); app.map.stripDirty = true; render(); } };
+      wave.addEventListener('pointerup', up); wave.addEventListener('pointercancel', up);
+      requestAnimationFrame(drawWave);
+
+      // playback + sound
+      const ctl = el('div', 'cellctl');
+      const play = el('button', 'accent', '▶ Hold to play');
+      play.addEventListener('pointerdown', (e) => { play.setPointerCapture(e.pointerId); app.noteOn('celled', app.hitFor(sid, frame), 60, 0.9); });
+      play.addEventListener('pointerup', () => app.noteOff('celled'));
+      play.addEventListener('pointercancel', () => app.noteOff('celled'));
+      ctl.appendChild(play);
+      const e0 = ed || { gain: 0, pitch: 0, reverse: false };
+      const mk = (def, key) => new SP.Knob({ def, get: () => (app.cellEdit(sid, frame) || e0)[key], set: v => { app.ensureCellEdit(sid, frame)[key] = v; app.touch(); }, commit: () => { app.commit('Cell ' + def.label); render(); } }).el;
+      ctl.appendChild(mk({ label: 'Gain', min: -24, max: 12, def: 0, fmt: SP.fmt.db }, 'gain'));
+      ctl.appendChild(mk({ label: 'Pitch', min: -24, max: 24, def: 0, step: 1, fmt: SP.fmt.st }, 'pitch'));
+      const rv = seg([[false, 'Forward'], [true, 'Reverse']], !!e0.reverse, v => { app.ensureCellEdit(sid, frame).reverse = v; app.commit('Cell direction'); render(); });
+      ctl.appendChild(rv);
+      const reset = el('button', 'small ghost', 'Reset cell'); reset.disabled = !ed;
+      reset.onclick = () => { app.resetCell(sid, frame); render(); };
+      ctl.appendChild(reset);
+      m.appendChild(ctl);
+      m.appendChild(el('div', 'hint', 'These changes belong to this cell, so they apply wherever it plays: from the map, the pads, the keyboard and notes already on the timeline. Effects here run before the track’s own effects.'));
+
+      // effects for this cell
+      const fxWrap = el('div', 'cellfx');
+      const list = ed ? ed.effects : [];
+      const add = select([['', '+ Add an effect to this cell…']].concat(SP.FX.ORDER.map(t => [t, SP.FX.TYPES[t].name])), '', v => {
+        if (!v) return;
+        app.ensureCellEdit(sid, frame).effects.push(SP.FX.create(v));
+        app.commit('Cell effect'); render();
+      });
+      add.style.width = '100%';
+      fxWrap.appendChild(add);
+      list.forEach((fx, idx) => fxWrap.appendChild(fxCard(list, fx, idx, render)));
+      m.appendChild(fxWrap);
+    };
+    render();
+  }
+
+  SP.Panels = { renderLibrary, renderLibDetail, renderFrameBlock, renderPanel, renderPadInfo, setProgress, flashPad, openCellEditor };
   void padHit;
 })();

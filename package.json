@@ -1,7 +1,7 @@
 {
   "name": "spiders-resampler",
   "productName": "Spiders",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Spiders - a spectral resampler that breaks a sound into cells of timbre you can play, record and arrange",
   "main": "main.js",
   "author": "Ben Skirth",

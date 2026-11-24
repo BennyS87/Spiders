@@ -52,17 +52,66 @@
   app.sampleName = (id) => { const s = app.project.samples.find(x => x.id === id); return s ? s.name : '(missing sound)'; };
   app.frameAt = (sid, t) => {
     const an = app.analysis.get(sid); if (!an) return -1;
+    if (!an.n) return -1;
     let lo = 0, hi = an.n - 1;
     while (lo < hi) { const m = (lo + hi + 1) >> 1; if (an.starts[m] <= t) lo = m; else hi = m - 1; }
+    if (an.gaps && (t > an.ends[lo] + 1e-6 || t < an.starts[lo] - 1e-6)) return -1; // manual cells can leave gaps
     return lo;
   };
-  app.hitFor = (sid, frame) => { const an = app.analysis.get(sid); return an ? { sampleId: sid, frame, start: an.starts[frame], end: an.ends[frame] } : null; };
+  app.sampleById = (id) => app.project.samples.find(x => x.id === id) || null;
+  /** A cell's own edits (bounds, gain, pitch, reverse, effects), or null. */
+  app.cellEdit = (sid, frame) => { const s = app.sampleById(sid); return s && s.cells && frame != null && frame >= 0 ? s.cells[frame] || null : null; };
+  app.hitFor = (sid, frame) => {
+    const an = app.analysis.get(sid); if (!an || frame < 0 || frame >= an.n) return null;
+    const ed = app.cellEdit(sid, frame);
+    return { sampleId: sid, frame, start: ed ? ed.start : an.starts[frame], end: ed ? ed.end : an.ends[frame] };
+  };
+  /**
+   * Which cells a spectral voice should blend at a point of the map (layout units).
+   * Returns [[start, end, weight], ...]; Spread widens the blend to neighbouring cells.
+   */
+  app.sourcesAt = (sid, x, y, spread) => {
+    const an = app.analysis.get(sid); if (!an || !an.n) return [];
+    const near = [];
+    for (let i = 0; i < an.n; i++) {
+      if (an.cluster[i] < 0 || !isFinite(an.x[i])) continue;
+      const dx = an.x[i] - x, dy = an.y[i] - y;
+      near.push([dx * dx + dy * dy, i]);
+    }
+    if (!near.length) return [];
+    near.sort((a, b) => a[0] - b[0]);
+    if (!an._spacing) { let cnt = 0; for (let i = 0; i < an.n; i++) if (an.cluster[i] >= 0) cnt++; an._spacing = Math.sqrt((an.aspect || 1.75) / Math.max(1, cnt)); }
+    const sig = an._spacing * (0.05 + 2.4 * (spread || 0));
+    const out = [];
+    const d0 = near[0][0];
+    for (let q = 0; q < Math.min(10, near.length); q++) {
+      const [d, i] = near[q];
+      const w = (spread || 0) < 0.01 ? (q ? 0 : 1) : Math.exp(-(d - d0) / (sig * sig));
+      if (w < 0.03) break;
+      const ed = app.cellEdit(sid, i);
+      out.push([ed ? ed.start : an.starts[i], ed ? ed.end : an.ends[i], w]);
+    }
+    return out;
+  };
+  engine.spectralSources = (hit, spread) => {
+    const an = app.analysis.get(hit.sampleId); if (!an) return [[hit.start, hit.end, 1]];
+    let x = hit.x, y = hit.y;
+    if (x == null && hit.frame >= 0 && isFinite(an.x[hit.frame])) { x = an.x[hit.frame]; y = an.y[hit.frame]; }
+    if (x == null) return [[hit.start, hit.end, 1]];
+    const out = app.sourcesAt(hit.sampleId, x, y, spread);
+    // the struck cell always leads, with its own (possibly edited) bounds
+    if (hit.x == null && hit.start != null) { if (out.length) { out[0][0] = hit.start; out[0][1] = hit.end; } else out.push([hit.start, hit.end, 1]); }
+    return out;
+  };
+  engine.cellEdit = (sid, frame) => app.cellEdit(sid, frame);
+  engine.cellEditByKey = (key) => { const i = key.lastIndexOf(':'); return app.cellEdit(key.slice(0, i), +key.slice(i + 1)); };
   app.songEnd = () => { let e = 0; for (const t of app.project.tracks) for (const ev of t.events) e = Math.max(e, ev.t + ev.len); return e; };
   const toast = app.toast = (msg, ms) => { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), ms || 2600); };
 
   engine.scatterPick = (sid, start, end, r) => {
     const an = app.analysis.get(sid); if (!an) return null;
-    const i = app.frameAt(sid, start + 1e-5), c = an.cluster[i];
+    const i = app.frameAt(sid, start + 1e-5); if (i < 0) return null;
+    const c = an.cluster[i];
     if (c < 0) return null;
     const list = an.byCluster[c]; if (!list || list.length < 2) return null;
     const f = list[Math.floor(r * list.length) % list.length];
@@ -143,9 +192,17 @@
     if (!s) return;
     const an = app.analysis.get(s.id);
     const t = document.createElement('span'); t.className = 'map-title'; t.textContent = s.name; bar.appendChild(t);
-    if (an) { const sub = document.createElement('span'); sub.className = 'map-sub'; sub.textContent = `${an.n} frames · ${an.k} timbre groups · ${an.layout === 'web' ? 'web: time spirals outwards, one wedge per group' : 'map: similar sounds sit together'}`; bar.appendChild(sub); }
+    if (an) { const sub = document.createElement('span'); sub.className = 'map-sub'; sub.textContent = `${an.n} cells · ${an.k} timbre groups · ${an.layout === 'web' ? 'web: time spirals outwards, one wedge per group' : an.layout === 'cells' ? 'cells: similar timbres crowd into small cells, unusual sounds get big ones' + (app.isSpectral() ? ' · press and drag to play' : '') : 'map: similar sounds sit together'}`; bar.appendChild(sub); }
     if (s._busy) { const b = document.createElement('span'); b.className = 'badge cyan'; b.textContent = 'Mapping… ' + Math.round((s._progress || 0) * 100) + '%'; bar.appendChild(b); }
     if (app.assignMode) { const b = document.createElement('span'); b.className = 'badge'; b.textContent = `Click cells to fill pads · now ${SP.KEYS[app.selPad].label} · Esc to stop`; bar.appendChild(b); }
+    if (s.settings.mode === 'manual') { const b = document.createElement('span'); b.className = 'badge cyan'; b.textContent = 'Manual cells: drag on the strip below'; bar.appendChild(b); }
+    const seg = document.createElement('div'); seg.className = 'seg'; seg.title = 'Layout';
+    for (const [v, l] of [['web', 'Web'], ['map', 'Map'], ['cells', 'Cells']]) {
+      const b = document.createElement('button'); b.textContent = l; if (s.settings.layout === v) b.className = 'on';
+      b.onclick = () => { if (s.settings.layout === v || s._busy) return; app.chooseLayout(s, v); app.commit('Layout'); app.reanalyse(s.id); SP.Panels.renderLibDetail(); renderMapBar(); };
+      seg.appendChild(b);
+    }
+    bar.appendChild(seg);
   }
   app.renderMapBar = renderMapBar;
 
@@ -283,6 +340,7 @@
   app.noteOff = (key) => {
     const h = app.held.get(key); if (!h) return;
     app.held.delete(key);
+    if (key === 'map') app.spectralPointer = null;
     engine.releaseLive(h.v);
     if (h.rec) finishRec(h.rec);
   };
@@ -318,9 +376,43 @@
   }
 
   // map / strip presses
-  app.mapPress = (sid, frame, strum) => {
+  const isSpectral = (tr) => tr && tr.sound && tr.sound.mode === 'spectral';
+  app.isSpectral = () => isSpectral(app.selTrack());
+  app.updateLiveSpectral = () => {
+    const tr = app.selTrack(); if (!isSpectral(tr)) return;
+    const s = Object.assign({}, SP.SOUND_DEFAULTS, tr.sound);
+    for (const [, h] of app.held) if (h.v && h.v.spectral) h.v.setParams({ tilt: s.tilt, texture: s.texture, shimmer: s.shimmer, width: s.width, glide: s.glide, lofi: s.quality === 'lofi' });
+    const h = app.held.get('map');
+    if (h && h.v && h.v.spectral && app.spectralPointer) app.spectralMove(app.spectralPointer.sid, app.spectralPointer.x, app.spectralPointer.y);
+  };
+  /** Switch a sound's layout. Cells is the playable landscape: fine frames, and the track plays spectral voices. */
+  app.chooseLayout = (smp, layout) => {
+    smp.settings.layout = layout;
+    if (layout === 'cells') {
+      if (smp.settings.mode !== 'manual' && !(smp.settings.mode === 'grid' && smp.settings.sliceMs <= 120)) { smp.settings.mode = 'grid'; smp.settings.sliceMs = 60; }
+      const tr = app.selTrack();
+      if (tr && tr.sound.mode !== 'spectral') { tr.sound.mode = 'spectral'; toast(`${tr.name} now plays spectral voices: press and drag across the cells. Change it on the Sound tab.`, 4500); SP.Panels.renderPanel(); }
+    }
+  };
+  app.mapPress = (sid, frame, strum, pt) => {
     const tr = app.selTrack();
     app.selFrame = { sampleId: sid, frame };
+    if (isSpectral(tr) && !(app.assignMode && !strum)) {
+      // held spectral voice: press starts it, moving glides it across the cells
+      const h = app.held.get('map');
+      const an = app.analysis.get(sid);
+      const p0 = pt || (an && isFinite(an.x[frame]) ? { x: an.x[frame], y: an.y[frame] } : null);
+      if (strum && h && h.sid === sid) {
+        if (p0) app.spectralMove(sid, p0.x, p0.y);
+      } else {
+        const hit = Object.assign(app.hitFor(sid, frame) || {}, p0 && pt ? { x: p0.x, y: p0.y } : {});
+        app.noteOn('map', hit, noteForFrame(tr, sid, frame), 0.9);
+        const nh = app.held.get('map'); if (nh) { nh.sid = sid; if (nh.rec && p0) { nh.rec.x = p0.x; nh.rec.y = p0.y; } }
+        if (p0) app.spectralPointer = { sid, x: p0.x, y: p0.y, sources: app.sourcesAt(sid, p0.x, p0.y, tr.sound.spread) };
+      }
+      clearTimeout(app._fbT); app._fbT = setTimeout(() => SP.Panels.renderFrameBlock(), 60);
+      return;
+    }
     if (!strum && app.assignMode && tr) {
       app.assignPad(app.selPad, sid, frame);
       app.noteOn('map', app.hitFor(sid, frame), tr.padNotes[app.selPad], 0.9);
@@ -333,6 +425,21 @@
       app.noteOn('map', app.hitFor(sid, frame), noteForFrame(tr, sid, frame), 0.9);
     }
     clearTimeout(app._fbT); app._fbT = setTimeout(() => SP.Panels.renderFrameBlock(), 60);
+  };
+  app.spectralMove = (sid, x, y) => {
+    const h = app.held.get('map'), tr = app.selTrack();
+    if (!h || !tr) return;
+    const sources = app.sourcesAt(sid, x, y, tr.sound.spread);
+    if (!sources.length) return;
+    if (h.v && h.v.spectral) h.v.move(sources, 0);
+    app.spectralPointer = { sid, x, y, sources };
+    if (h.rec) {
+      const now = engine.beatNow();
+      let dt = now - h.rec.t; if (dt < 0 && app.project.loop.on) dt = app.project.loop.end - h.rec.t + (now - app.project.loop.start);
+      const path = h.rec.path || (h.rec.path = []);
+      const last = path[path.length - 1];
+      if (!last || dt - last[0] > 0.02) path.push([Math.max(0, dt), x, y]);
+    }
   };
   app.auditionEvent = (ev, tr) => {
     const strip = engine.strips.get(tr.id);
@@ -376,7 +483,11 @@
     SP.Panels.renderFrameBlock();
     const tr = app.selTrack();
     const an = app.analysis.get(sid), c = an ? an.cluster[frame] : -1;
+    const ed = app.cellEdit(sid, frame);
     const items = [
+      { label: 'Edit cell…', action: () => SP.Panels.openCellEditor(sid, frame) },
+      ...(ed ? [{ label: 'Reset this cell', action: () => app.resetCell(sid, frame) }] : []),
+      '-',
       { label: `Put on pad ${SP.KEYS[app.selPad].label}`, action: () => app.assignPad(app.selPad, sid, frame) },
       { label: 'Put on the next empty pad', action: () => { const i = tr ? tr.pads.findIndex(p => !p) : -1; if (i < 0) return toast('All pads are full'); app.assignPad(i, sid, frame); } },
       { label: 'Play it melodically', action: () => { if (!tr) return; tr.playMode = 'melodic'; app.setMelodic(tr, sid, frame); } },
@@ -385,6 +496,8 @@
       { label: 'Export this frame as WAV…', action: () => app.exportFrame(sid, frame) }
     ];
     if (c >= 0) items.push({ label: `Export all of group ${c + 1} as WAV…`, action: () => app.exportGroup(sid, c) });
+    const smp = app.sampleById(sid);
+    if (smp && smp.settings.mode === 'manual') items.push('-', { label: 'Delete this cell', action: () => app.deleteRegion(sid, frame) });
     app.menu(e.clientX, e.clientY, items);
   };
 
@@ -477,10 +590,12 @@
     meta._busy = true; meta._progress = 0; SP.Panels.renderLibrary(); renderMapBar();
     const st = meta.settings;
     let lastUi = 0;
-    const res = await SP.analyse(mono(au.buf), au.buf.sampleRate, {
+    if (!au.mono) { au.mono = mono(au.buf); const e = engine.buffers.get(meta.id); if (e) e.mono = au.mono; }
+    const res = await SP.analyse(au.mono, au.buf.sampleRate, {
       mode: st.mode, sliceMs: st.sliceMs, sensitivity: st.sensitivity, maxSliceMs: st.maxSliceMs,
       beatDiv: SP.DIVS[st.beatDivName] || st.beatDiv || 0.25, bpm: app.project.bpm,
-      clusters: st.clusters, layout: st.layout, aspect: mapAspect(), seed: 7
+      clusters: st.clusters, layout: st.layout, aspect: mapAspect(), seed: 7,
+      regions: st.mode === 'manual' ? (meta.regions || []) : null, cacheKey: meta.id
     }, (p) => {
       meta._progress = p;
       const now = performance.now();
@@ -496,6 +611,15 @@
     // keep pads, melodic frames and recorded notes pointing at the right frames
     const remap = (o) => { if (o && o.sampleId === id) o.frame = app.frameAt(id, (o.start + o.end) / 2); };
     for (const t of app.project.tracks) { t.pads.forEach(remap); remap(t.melodic); t.events.forEach(remap); }
+    const smp = app.sampleById(id);
+    if (smp && smp.cells && res._remapCells !== false) {
+      const next = {};
+      for (const [k, ed] of Object.entries(smp.cells)) {
+        const f = ed.anchor != null ? app.frameAt(id, ed.anchor) : +k;
+        if (f >= 0 && !next[f]) next[f] = ed;
+      }
+      smp.cells = next;
+    }
     if (app.selFrame && app.selFrame.sampleId === id) app.selFrame = null;
     if (app.project.selectedSample === id) { app.map.setSample(id); app.map.invalidate(); }
   }
@@ -545,6 +669,65 @@
     if (!app.songEnd()) { app.project.bpm = 112; engine.setTempoChanged(); }
     await app.importFiles([{ name: 'Demo groove.wav', data: wav }]);
   };
+
+  // ---------------- editing single cells ----------------
+  app.ensureCellEdit = (sid, frame) => {
+    const s = app.sampleById(sid), an = app.analysis.get(sid); if (!s || !an) return null;
+    s.cells = s.cells || {};
+    if (!s.cells[frame]) s.cells[frame] = { start: an.starts[frame], end: an.ends[frame], anchor: (an.starts[frame] + an.ends[frame]) / 2, gain: 0, pitch: 0, reverse: false, effects: [] };
+    return s.cells[frame];
+  };
+  app.resetCell = (sid, frame) => {
+    const s = app.sampleById(sid); if (!s || !s.cells || !s.cells[frame]) return;
+    delete s.cells[frame];
+    app.commit('Reset cell'); app.map.invalidate();
+  };
+  // keep pads that point at this cell in step with its new bounds
+  app.syncCellBounds = (sid, frame) => {
+    const ed = app.cellEdit(sid, frame); if (!ed) return;
+    for (const t of app.project.tracks) for (const p of t.pads.concat([t.melodic])) if (p && p.sampleId === sid && p.frame === frame) { p.start = ed.start; p.end = ed.end; }
+  };
+
+  // ---------------- manual cells (drawn on the strip) ----------------
+  let regionTimer = null;
+  function regionsChanged(s) {
+    s.regions.sort((a, b) => a[0] - b[0]);
+    app.commit('Edit cells');
+    app.map.stripDirty = true;
+    clearTimeout(regionTimer);
+    regionTimer = setTimeout(() => app.reanalyse(s.id), 250);
+  }
+  app.seedRegions = (sid) => {
+    const s = app.sampleById(sid), an = app.analysis.get(sid); if (!s) return;
+    if (s.regions && s.regions.length) return;
+    s.regions = [];
+    if (an && !an.gaps) for (let i = 0; i < an.n; i++) if (an.cluster[i] >= 0) s.regions.push([+an.starts[i].toFixed(4), +an.ends[i].toFixed(4)]);
+  };
+  app.addRegion = (sid, a, b) => {
+    const s = app.sampleById(sid); if (!s) return;
+    s.regions = s.regions || [];
+    let lo = Math.min(a, b), hi = Math.max(a, b);
+    // don't overlap neighbours
+    for (const r of s.regions) { if (r[1] <= lo || r[0] >= hi) continue; if (r[0] <= lo) lo = r[1]; else hi = Math.min(hi, r[0]); }
+    if (hi - lo < 0.01) return toast('Cells need at least 10 ms of free space');
+    s.regions.push([lo, hi]);
+    regionsChanged(s);
+  };
+  app.updateRegion = (sid, idx, a, b, final) => {
+    const s = app.sampleById(sid); if (!s || !s.regions[idx]) return;
+    s.regions[idx] = [Math.min(a, b), Math.max(a, b)];
+    if (final) regionsChanged(s); else app.map.stripDirty = true;
+  };
+  app.deleteRegion = (sid, frame) => {
+    const s = app.sampleById(sid), an = app.analysis.get(sid); if (!s || !s.regions) return;
+    const t0 = an ? an.starts[frame] : null;
+    const idx = s.regions.findIndex(r => Math.abs(r[0] - t0) < 1e-3);
+    if (idx < 0) return;
+    s.regions.splice(idx, 1);
+    if (s.cells && s.cells[frame]) delete s.cells[frame];
+    regionsChanged(s);
+  };
+  app.clearRegions = (sid) => { const s = app.sampleById(sid); if (!s) return; s.regions = []; s.cells = {}; regionsChanged(s); };
 
   // ---------------- transport ----------------
   app.togglePlay = () => {
@@ -761,7 +944,7 @@
     let done = 0;
     for (const job of jobs) {
       const tail = opt.ending === 'cut' ? 0 : tailSeconds(job.tracks);
-      let buf = await SP.renderOffline({ project: p, buffers, b0, b1, repeats, tail, trackIds: job.ids, sampleRate: 44100, scatterPick: engine.scatterPick, masterVolume: p.master, wrapTail: opt.ending === 'loop' });
+      let buf = await SP.renderOffline({ project: p, buffers, b0, b1, repeats, tail, trackIds: job.ids, sampleRate: 44100, scatterPick: engine.scatterPick, cellEdit: engine.cellEdit, spectralSources: engine.spectralSources, monos: new Map([...app.audio].map(([id, a]) => [id, a.mono])), masterVolume: p.master, wrapTail: opt.ending === 'loop' });
       if (opt.ending === 'ring') buf = SP.Export.trimTail(buf, (b1 - b0) * repeats * 60 / p.bpm);
       progress((done + 0.4) / jobs.length);
       const bytes = isMp3 ? await SP.Export.encodeMp3(buf, kbps, f => progress((done + 0.4 + f * 0.6) / jobs.length)) : SP.Export.encodeWav(buf);
@@ -803,6 +986,7 @@
       return;
     }
     if (e.code === 'Enter') { e.preventDefault(); app.home(); return; }
+    if (e.code === 'Escape' && $('modalRoot').firstChild) { $('modalRoot').innerHTML = ''; app.releaseAll(); app.map.invalidate(); return; }
     if (e.code === 'Escape') { if (app.assignMode) app.setAssignMode(false); if (app.learnPad >= 0) app.learnMidi(-1); app.timeline.sel.clear(); hideMenu(); return; }
     if (e.code === 'Delete' || e.code === 'Backspace') { if (app.timeline.deleteSelected()) e.preventDefault(); return; }
     if (e.altKey) return;

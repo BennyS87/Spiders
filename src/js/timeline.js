@@ -362,7 +362,8 @@
             { label: 'Pitch up a semitone', action: shift(1) }, { label: 'Pitch down a semitone', action: shift(-1) },
             { label: 'Pitch up an octave', action: shift(12) }, { label: 'Pitch down an octave', action: shift(-12) },
             '-',
-            { label: 'Show this frame in the map', action: () => app.revealFrame(hit.ev.sampleId, hit.ev.frame) }
+            { label: 'Show this cell in the map', action: () => app.revealFrame(hit.ev.sampleId, hit.ev.frame) },
+            { label: 'Edit this cell…', action: () => { app.revealFrame(hit.ev.sampleId, hit.ev.frame); SP.Panels.openCellEditor(hit.ev.sampleId, hit.ev.frame); } }
           ]);
         } else if (y >= RULER) {
           const tr = this.p.tracks[this.rowOf(y)];

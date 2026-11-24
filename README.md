@@ -15,6 +15,10 @@ Spiders sits alongside Reel Studio and Orbit and uses the same effects.
 | Read the map | Every cell is one frame (a slice of the sound). The colour is its timbre group, ordered dark (violet) to bright (amber). The shape inside each cell is that frame's spectrum: lows at the top, going round clockwise. Brighter cells are louder. In **Web** layout each group gets a wedge and time spirals out from the centre; in **Map** layout similar sounds sit close together. |
 | Play frames | Click a cell, or drag across the map to strum through cells. Click or drag along the strip under the map to play the sound in time order. |
 | Change how the sound is sliced | In the **Slicing** panel on the left: **Transients** cuts where each new sound starts (set **Sensitivity** and the **Longest** frame). **Grid** gives equal slices. **Beats** slices in time with the project tempo. **Timbre groups** sets the number of groups, or leaves it on Auto. The map redraws on its own after a change. |
+| Cells mode (play the sound as a landscape) | Choose **Cells** at the top right of the map, or under **Layout**. Spiders cuts the sound into fine 60 ms frames and lays them out so that similar timbres crowd together into small cells, while unusual sounds sit apart in big cells of their own. The track switches to **Spectral** playback: press anywhere and the sound at that point is held as a steady texture, with no attack. Drag and it flows smoothly from cell to cell. |
+| Spectral playback | **Sound** tab, **Playback: Spectral**. It works in every layout, and from pads, keys and MIDI as well as the map. **Spread** blends neighbouring cells (low is precise, high is a smooth blur). **Glide** sets how quickly the sound flows to a new point. **Tilt** brightens or darkens. **Texture** loosens the phase for a breathier hold. **Shimmer** makes partials flicker. **Width** spreads it in stereo. **Quality** is Clean or Lo-fi, and **Pitch** shifts it in the frequency domain. When you record, your drag path is recorded and played back. |
+| Edit a single cell | Right-click a cell (or double-click it) and choose **Edit cell…**. Drag the pink edges to change how much of the sound the cell uses, or drag inside to move the snippet. Set the cell's own gain, pitch and direction, and add effects that only this cell goes through, before the track's effects. Edits apply wherever the cell plays: map, pads, keys and notes already recorded. Edited cells have a small ring on the map. **Reset cell** removes the edits. |
+| Manual cells | **Slicing: Manual**. Drag along the strip under the map to cut a cell, drag a cell's edge to resize it, and right-click a cell to edit or delete it. Switching to Manual starts you off with the current cells, and **Clear all cells** starts you from scratch. The map updates after each change. |
 | Put frames on pads | Each track has 40 pads, laid out like your keyboard: 1–0, Q–P, A–;, Z–/. Drag a cell out of the map onto a pad, or press **Assign from map** and click cells one after another. **Fill pads…** fills them for you: one per timbre group, in time order, loudest first, dark to bright, or at random. |
 | Play pads | Computer keys, a click on the pad, or a MIDI keyboard. Pads start at C2 (MIDI note 36) and go up a semitone at a time. **Learn MIDI note** sets any pad to any key. |
 | Play one frame as an instrument | Switch the track to **Melodic** on the Pads tab and click a cell. Keys A W S E D F T G Y H U J K play it chromatically, and Z and X change octave. On a MIDI keyboard, middle C plays it at its own pitch. |
@@ -45,8 +49,8 @@ GitHub Actions builds the apps on GitHub's own Mac and Windows machines, so you 
    ```
    (Or use GitHub Desktop and choose *Add Existing Repository* for this folder.)
 3. Open the **Actions** tab. The *Build Spiders* workflow builds both apps in about 5–10 minutes. Open the finished run and download them under **Artifacts**:
-   - `Spiders-mac`: `Spiders-1.0.0-mac-arm64.dmg` (Apple Silicon) and `Spiders-1.0.0-mac-x64.dmg` (Intel)
-   - `Spiders-win`: `Spiders-Setup-1.0.0.exe` (installer) and `Spiders-Portable-1.0.0.exe`
+   - `Spiders-mac`: `Spiders-1.1.0-mac-arm64.dmg` (Apple Silicon) and `Spiders-1.1.0-mac-x64.dmg` (Intel)
+   - `Spiders-win`: `Spiders-Setup-1.1.0.exe` (installer) and `Spiders-Portable-1.1.0.exe`
 4. **To publish a release** with download links on the repo's Releases page, push a version tag:
    ```bash
    git tag v1.0.0
@@ -77,7 +81,8 @@ npm start
 2. **Slicing:** frames are cut at onsets (peaks in spectral change, with an adaptive threshold set by Sensitivity), on an even grid, or on beat divisions. Quiet frames are kept on the strip but left off the map. A sound can have up to 1,024 frames.
 3. **Measuring timbre:** for each frame, Spiders measures 12 MFCCs plus brightness (spectral centroid), noisiness (spectral flatness), loudness, movement and attack.
 4. **Grouping:** k-means++ clusters the frames. In Auto mode it tries 3 to 12 groups and picks the best fit by silhouette score. Groups are ordered from dark to bright.
-5. **Spinning the web:** principal component analysis places similar frames close together. A relaxation pass then spreads the frames into even cells, and each cell is drawn as a Voronoi region with its own radial spectrum.
+5. **Spinning the web:** principal component analysis places similar frames close together. A relaxation pass then spreads the frames into even cells, and each cell is drawn as a Voronoi region with its own radial spectrum. In **Cells** layout, t-SNE builds the landscape instead and nothing is evened out, so dense regions get small cells and outliers get big ones.
+6. **Spectral voice:** an AudioWorklet phase vocoder reads 2048-sample windows across the chosen cells, blends their magnitudes, and keeps each partial's true frequency from the phase difference between two windows. It then resynthesises a steady, held sound, gliding the spectrum whenever the point moves.
 
 All of this runs in a background worker, so the app stays responsive.
 
@@ -89,7 +94,8 @@ src/index.html, styles.css   UI
 src/js/analysis.js           Spectral analysis, slicing, features, clustering, layout (runs in a worker)
 src/js/midi-render.js        MIDI file reader and built-in sounds for MIDI import
 src/js/effects.js            The effects (EQ, filter, compressor, saturation, distortion, modulation, echo, reverb, trance gate, vocoder)
-src/js/engine.js             Audio engine: frame voices, track strips, transport, scheduler, offline render
+src/js/spectral.js           Spectral (held) voice: AudioWorklet phase-vocoder freeze, blending and glide
+src/js/engine.js             Audio engine: frame and spectral voices, track and cell effect chains, transport, scheduler, offline render
 src/js/mapview.js            The cell map and the strip
 src/js/timeline.js           Tracks and note editing
 src/js/panels.js             Sound library, Pads / Sound / Effects panels

@@ -2,7 +2,17 @@
 (function () {
   const SP = (window.Spiders = window.Spiders || {});
 
-  SP.SOUND_DEFAULTS = { gain: 1, pitch: 0, fine: 0, attack: 0.003, release: 0.08, length: 1, mode: 'oneshot', reverse: false, scatter: 0, velSens: 0.6 };
+  SP.SOUND_DEFAULTS = { gain: 1, pitch: 0, fine: 0, attack: 0.003, release: 0.08, length: 1, mode: 'oneshot', reverse: false, scatter: 0, velSens: 0.6,
+    spread: 0.25, glide: 0.12, tilt: 0, texture: 0.1, shimmer: 0, width: 0.5, quality: 'clean' };
+  // used by the Spectral (held) playback mode
+  SP.SPECTRAL_PARAMS = [
+    { key: 'spread', label: 'Spread', min: 0, max: 1, def: 0.25, fmt: SP.fmt.pct },
+    { key: 'glide', label: 'Glide', min: 0.005, max: 3, def: 0.12, curve: 'log', fmt: SP.fmt.ms },
+    { key: 'tilt', label: 'Tilt', min: -6, max: 6, def: 0, fmt: v => (v > 0 ? '+' : '') + v.toFixed(1) + ' dB/oct' },
+    { key: 'texture', label: 'Texture', min: 0, max: 1, def: 0.1, fmt: SP.fmt.pct },
+    { key: 'shimmer', label: 'Shimmer', min: 0, max: 1, def: 0, fmt: SP.fmt.pct },
+    { key: 'width', label: 'Width', min: 0, max: 1, def: 0.5, fmt: SP.fmt.pct }
+  ];
   SP.SOUND_PARAMS = [
     { key: 'gain', label: 'Gain', min: 0, max: 2, def: 1, fmt: SP.fmt.pct },
     { key: 'pitch', label: 'Pitch', min: -24, max: 24, def: 0, step: 1, fmt: SP.fmt.st },
@@ -29,28 +39,13 @@
     return { input, comp, out: lim };
   }
 
-  // ---------------- track strip ----------------
-  class Strip {
-    constructor(ctx, dest) {
-      this.ctx = ctx;
-      const g = (v) => { const n = ctx.createGain(); n.gain.value = v == null ? 1 : v; n.channelCount = 2; n.channelCountMode = 'explicit'; return n; };
-      this.input = g(); this.fxOut = g();
-      this.panner = ctx.createStereoPanner();
-      this.vol = g(); this.mute = g();
-      this.fxOut.connect(this.panner).connect(this.vol).connect(this.mute).connect(dest);
-      this.input.connect(this.fxOut);
-      this.fx = []; this.fxSig = '';
-      this.meter = ctx.createAnalyser(); this.meter.fftSize = 512; this.mute.connect(this.meter);
-    }
-    update(track, bpm, audible) {
-      const ctx = this.ctx, now = ctx.currentTime;
-      this.panner.pan.setTargetAtTime(track.pan, now, 0.02);
-      this.vol.gain.setTargetAtTime(track.volume, now, 0.02);
-      this.mute.gain.setTargetAtTime(audible ? 1 : 0, now, 0.01);
-      this.sound = Object.assign({}, SP.SOUND_DEFAULTS, track.sound);
-      const active = track.effects.filter(f => f.on);
+  // ---------------- an ordered effect chain ----------------
+  class FxChain {
+    constructor(ctx, input, output) { this.ctx = ctx; this.input = input; this.output = output; this.fx = []; this.sig = null; }
+    update(effects, bpm) {
+      const active = (effects || []).filter(f => f.on);
       const sig = active.map(f => f.id).join('|');
-      if (sig !== this.fxSig) this.rebuild(active, bpm);
+      if (sig !== this.sig) this.rebuild(active, bpm);
       else for (let i = 0; i < active.length; i++) this.fx[i].update(active[i].p, bpm);
     }
     rebuild(active, bpm) {
@@ -68,14 +63,59 @@
       for (const [, n] of byId) { try { n.input.disconnect(); } catch (e) { } n.dispose && n.dispose(); }
       let prev = this.input;
       for (const n of next) { prev.connect(n.input); prev = n.output; }
-      prev.connect(this.fxOut);
-      this.fx = next; this.fxSig = active.map(f => f.id).join('|');
+      prev.connect(this.output);
+      this.fx = next; this.sig = active.map(f => f.id).join('|');
     }
-    scheduleFx(t0, b0, b1, spb) { for (const n of this.fx) if (n.schedule) n.schedule(t0, b0, b1, spb); }
-    resetFx(t) { for (const n of this.fx) if (n.reset) n.reset(t); }
+    schedule(t0, b0, b1, spb) { for (const n of this.fx) if (n.schedule) n.schedule(t0, b0, b1, spb); }
+    reset(t) { for (const n of this.fx) if (n.reset) n.reset(t); }
+    dispose() { try { this.input.disconnect(); } catch (e) { } for (const n of this.fx) n.dispose && n.dispose(); this.fx = []; }
+  }
+  const stereoGain = (ctx, v) => { const n = ctx.createGain(); n.gain.value = v == null ? 1 : v; n.channelCount = 2; n.channelCountMode = 'explicit'; return n; };
+
+  // ---------------- track strip ----------------
+  class Strip {
+    constructor(ctx, dest) {
+      this.ctx = ctx;
+      this.input = stereoGain(ctx); this.fxOut = stereoGain(ctx);
+      this.panner = ctx.createStereoPanner();
+      this.vol = stereoGain(ctx); this.mute = stereoGain(ctx);
+      this.fxOut.connect(this.panner).connect(this.vol).connect(this.mute).connect(dest);
+      this.chain = new FxChain(ctx, this.input, this.fxOut);
+      this.chain.rebuild([], 120);
+      this.cells = new Map(); // edited cells with their own effects: key -> {chain, input, sig}
+      this.sound = Object.assign({}, SP.SOUND_DEFAULTS);
+    }
+    get fx() { return this.chain.fx; }
+    update(track, bpm, audible) {
+      const ctx = this.ctx, now = ctx.currentTime;
+      this.panner.pan.setTargetAtTime(track.pan, now, 0.02);
+      this.vol.gain.setTargetAtTime(track.volume, now, 0.02);
+      this.mute.gain.setTargetAtTime(audible ? 1 : 0, now, 0.01);
+      this.sound = Object.assign({}, SP.SOUND_DEFAULTS, track.sound);
+      this.chain.update(track.effects, bpm);
+      this.bpm = bpm;
+    }
+    /** Destination for a cell with its own effects (created on first use). */
+    cellInput(key, effects, bpm) {
+      if (!effects || !effects.some(f => f.on)) return this.input;
+      let c = this.cells.get(key);
+      if (!c) { const input = stereoGain(this.ctx); c = { input, chain: new FxChain(this.ctx, input, this.input) }; this.cells.set(key, c); }
+      c.chain.update(effects, bpm || this.bpm || 120);
+      return c.input;
+    }
+    syncCells(lookup, bpm) {
+      for (const [key, c] of this.cells) {
+        const ed = lookup(key);
+        if (!ed || !ed.effects || !ed.effects.some(f => f.on)) { c.chain.dispose(); this.cells.delete(key); }
+        else c.chain.update(ed.effects, bpm);
+      }
+    }
+    scheduleFx(t0, b0, b1, spb) { this.chain.schedule(t0, b0, b1, spb); for (const [, c] of this.cells) c.chain.schedule(t0, b0, b1, spb); }
+    resetFx(t) { this.chain.reset(t); for (const [, c] of this.cells) c.chain.reset(t); }
     dispose() {
       try { this.mute.disconnect(); } catch (e) { }
-      for (const n of this.fx) n.dispose && n.dispose();
+      this.chain.dispose();
+      for (const [, c] of this.cells) c.chain.dispose();
     }
   }
 
@@ -89,21 +129,23 @@
    * Play one frame of a sample.
    * hit: {start, end, pitch, vel}; hold: seconds the note is held (null = held live until release()).
    */
-  function playFrame(ctx, strip, entry, hit, when, hold, voices) {
+  function playFrame(ctx, strip, entry, hit, when, hold, voices, opt) {
     const s = strip.sound || SP.SOUND_DEFAULTS;
-    const buf = s.reverse ? (entry.rev || (entry.rev = reversed(ctx, entry.buf))) : entry.buf;
+    opt = opt || {};
+    const rev = opt.reverse != null ? opt.reverse : s.reverse;
+    const buf = rev ? (entry.rev || (entry.rev = reversed(ctx, entry.buf))) : entry.buf;
     const dur = entry.buf.duration;
     const rate = Math.pow(2, ((hit.pitch || 0) + s.pitch + s.fine / 100) / 12);
     const segLen = Math.max(0.005, (hit.end - hit.start) * s.length);
     let r0 = hit.start, r1 = Math.min(dur, hit.start + segLen);
-    if (s.reverse) { const a = dur - r1, b = dur - r0; r0 = a; r1 = b; }
+    if (rev) { const a = dur - r1, b = dur - r0; r0 = a; r1 = b; }
     const playDur = (r1 - r0) / rate;
     const src = ctx.createBufferSource();
     src.buffer = buf; src.playbackRate.value = rate;
     const g = ctx.createGain();
-    src.connect(g).connect(strip.input);
+    src.connect(g).connect(opt.dest || strip.input);
     const vel = hit.vel == null ? 0.9 : hit.vel;
-    const peak = s.gain * (1 - s.velSens * (1 - vel)) * 0.9;
+    const peak = s.gain * (opt.gainMul == null ? 1 : opt.gainMul) * (1 - s.velSens * (1 - vel)) * 0.9;
     const atk = Math.min(s.attack, Math.max(0.001, playDur * 0.5));
     const rel = s.release;
     g.gain.setValueAtTime(0, when);
@@ -144,11 +186,97 @@
     return v;
   }
 
+  /**
+   * Held spectral voice: freezes the sound at a point on the map and glides as the point moves.
+   * hit.sources: [[start, end, weight], ...]; hit.path: optional [[secondsAfterStart, sources], ...]
+   */
+  function playSpectral(ctx, strip, sampleId, hit, when, hold, voices, opt) {
+    if (!SP.Spectral.isPrepared(ctx)) return null;
+    const s = strip.sound || SP.SOUND_DEFAULTS;
+    opt = opt || {};
+    const params = {
+      pitch: Math.pow(2, ((hit.pitch || 0) + s.pitch + s.fine / 100) / 12),
+      tilt: s.tilt, texture: s.texture, shimmer: s.shimmer, width: s.width, glide: s.glide, lofi: s.quality === 'lofi'
+    };
+    const node = SP.Spectral.voice(ctx, sampleId, hit.sources, params);
+    const g = ctx.createGain();
+    node.connect(g).connect(opt.dest || strip.input);
+    const vel = hit.vel == null ? 0.9 : hit.vel;
+    const peak = s.gain * (opt.gainMul == null ? 1 : opt.gainMul) * (1 - s.velSens * (1 - vel)) * 0.8;
+    const atk = Math.max(0.01, s.attack), rel = Math.max(0.03, s.release);
+    // the voice needs one window (about 45 ms) to fill before it sounds
+    const start = when + 0.045;
+    g.gain.setValueAtTime(0, when);
+    g.gain.setValueAtTime(0, start);
+    g.gain.linearRampToValueAtTime(peak, start + atk);
+    if (hit.path) for (const [dt, src] of hit.path) node.port.postMessage({ type: 'target', at: when + dt, sources: src });
+    const v = {
+      node, g, when, live: hold == null, endT: Infinity, spectral: true,
+      move(sources, t) { node.port.postMessage({ type: 'target', at: t || 0, sources }); },
+      setParams(p2) { node.port.postMessage({ type: 'params', at: 0, params: p2 }); },
+      release(t) {
+        t = Math.max(t, start + 0.01);
+        if (t >= v.endT) return;
+        try { g.gain.cancelAndHoldAtTime(t); } catch (e) { g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(peak, t); }
+        g.gain.linearRampToValueAtTime(0, t + rel);
+        node.port.postMessage({ type: 'stop', at: t + rel + 0.06 });
+        v.endT = t;
+        setTimeout(() => { try { g.disconnect(); node.disconnect(); } catch (e) { } if (voices) { const i = voices.indexOf(v); if (i >= 0) voices.splice(i, 1); } }, Math.max(0, (t + rel - ctx.currentTime) * 1000 + 300));
+      },
+      kill(t) { v.release(t); }
+    };
+    if (hold != null) v.release(when + Math.max(0.06, hold));
+    if (voices) {
+      voices.push(v);
+      if (voices.filter(x => x.spectral).length > 16) { const old = voices.find(x => x.spectral && x !== v); old.kill(ctx.currentTime); }
+    }
+    return v;
+  }
+
   function click(ctx, dest, t, accent) {
     const o = ctx.createOscillator(), g = ctx.createGain();
     o.frequency.value = accent ? 1760 : 1175;
     g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(accent ? 0.35 : 0.22, t + 0.001); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
     o.connect(g).connect(dest); o.start(t); o.stop(t + 0.06);
+  }
+
+  function monoOf(entry) {
+    if (entry.mono) return entry.mono;
+    const b = entry.buf, n = b.length, out = new Float32Array(n), C = b.numberOfChannels;
+    for (let c = 0; c < C; c++) { const d = b.getChannelData(c); for (let i = 0; i < n; i++) out[i] += d[i] / C; }
+    entry.mono = out;
+    return out;
+  }
+
+  /** Play one hit on a strip: applies scatter, the cell's own edits (bounds, gain, pitch, effects) and the track's playback mode. */
+  function triggerOn(ctx, strip, entries, ev, when, hold, r, hooks, voices) {
+    const entry = entries.get(ev.sampleId);
+    if (!entry) return null;
+    let hit = ev;
+    const s = strip.sound || SP.SOUND_DEFAULTS;
+    if (s.mode !== 'spectral' && s.scatter > 0 && hooks.scatterPick && r < s.scatter) {
+      const alt = hooks.scatterPick(ev.sampleId, ev.start, ev.end, SP.hash01(String(r), 3));
+      if (alt) hit = Object.assign({}, ev, alt);
+    }
+    const ed = hooks.cellEdit ? hooks.cellEdit(hit.sampleId, hit.frame) : null;
+    const opt = {};
+    if (ed) {
+      hit = Object.assign({}, hit, { start: ed.start, end: ed.end, pitch: (hit.pitch || 0) + (ed.pitch || 0) });
+      opt.gainMul = Math.pow(10, (ed.gain || 0) / 20);
+      if (ed.reverse) opt.reverse = !s.reverse;
+      opt.dest = strip.cellInput(hit.sampleId + ':' + hit.frame, ed.effects, strip.bpm);
+    }
+    let v;
+    if (s.mode === 'spectral') {
+      if (!hit.sources && hooks.spectralSources) hit = Object.assign({}, hit, { sources: hooks.spectralSources(hit, s.spread) });
+      if (hit.path && hooks.spectralSources) {
+        const spb = hooks.spb ? hooks.spb() : 0.5;
+        hit = Object.assign({}, hit, { path: hit.path.map(([db, x, y]) => [db * spb, hooks.spectralSources({ sampleId: hit.sampleId, x, y }, s.spread)]) });
+      }
+      v = playSpectral(ctx, strip, hit.sampleId, hit, when, hold, voices, opt);
+    } else v = playFrame(ctx, strip, entry, hit, when, hold, voices, opt);
+    if (v) v.hit = hit;
+    return v;
   }
 
   // ---------------- realtime engine ----------------
@@ -159,6 +287,8 @@
       this.playing = false; this.posBeat = 0; this.anchors = []; this.pass = 0;
       this.hits = []; // {sampleId, start, time, trackId}
       this.scatterPick = null; // (sampleId, start, end, r) => {start,end}
+      this.cellEdit = null;    // (sampleId, frame) => edit or null
+      this.spectralSources = null; // (hit, spread) => [[start, end, weight], ...]
       this.onStop = null;
     }
     init() {
@@ -170,6 +300,7 @@
       this.master.out.connect(this.ctx.destination);
       this.clickBus = this.ctx.createGain(); this.clickBus.gain.value = 0.8; this.clickBus.connect(this.ctx.destination);
       this.audition = new Strip(this.ctx, this.master.input);
+      SP.Spectral.prepare(this.ctx).then(() => { for (const [id] of this.buffers) this.loadSpectral(id); }).catch(e => console.warn('Spectral voices unavailable', e));
       this.freeBeat = 0; this.freeTime = 0;
       this.timer = setInterval(() => this.tick(), 25);
       if (this.project) this.sync(this.project);
@@ -177,7 +308,11 @@
     resume() { this.init(); if (this.ctx.state !== 'running') return this.ctx.resume(); return Promise.resolve(); }
     get sampleRate() { this.init(); return this.ctx.sampleRate; }
     setMasterVolume(v) { this.masterVolume = v; if (this.master) this.master.input.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02); }
-    setBuffer(id, buf) { this.buffers.set(id, { buf, rev: null }); }
+    setBuffer(id, buf) { this.buffers.set(id, { buf, rev: null }); if (this.ctx && SP.Spectral.isPrepared(this.ctx)) this.loadSpectral(id); }
+    loadSpectral(id) {
+      const e = this.buffers.get(id); if (!e) return;
+      SP.Spectral.load(this.ctx, id, monoOf(e), e.buf.sampleRate);
+    }
     removeBuffer(id) { this.buffers.delete(id); }
 
     sync(project) {
@@ -190,7 +325,9 @@
         let st = this.strips.get(t.id);
         if (!st) { st = new Strip(this.ctx, this.master.input); this.strips.set(t.id, st); }
         st.update(t, project.bpm, !t.mute && (!anySolo || t.solo));
+        if (this.cellEditByKey) st.syncCells(this.cellEditByKey, project.bpm);
       }
+      if (this.cellEditByKey) this.audition.syncCells(this.cellEditByKey, project.bpm);
       for (const [id, st] of this.strips) if (!seen.has(id)) { st.dispose(); this.strips.delete(id); }
     }
 
@@ -300,16 +437,8 @@
     }
 
     trigger(track, strip, ev, when, hold, r) {
-      const entry = this.buffers.get(ev.sampleId);
-      if (!entry) return null;
-      let hit = ev;
-      const s = strip.sound || SP.SOUND_DEFAULTS;
-      if (s.scatter > 0 && this.scatterPick && r < s.scatter) {
-        const alt = this.scatterPick(ev.sampleId, ev.start, ev.end, SP.hash01(String(r), 3));
-        if (alt) hit = Object.assign({}, ev, alt);
-      }
-      const v = playFrame(this.ctx, strip, entry, hit, when, hold, this.voices);
-      this.hits.push({ sampleId: hit.sampleId, start: hit.start, time: when, trackId: track ? track.id : null, dur: Math.min(hold || 0.3, 1.5) });
+      const v = triggerOn(this.ctx, strip, this.buffers, ev, when, hold, r, this, this.voices);
+      if (v) this.hits.push({ sampleId: v.hit.sampleId, start: v.hit.start, frame: v.hit.frame, time: when, trackId: track ? track.id : null, dur: Math.min(hold || 0.3, 1.5) });
       return v;
     }
 
@@ -337,22 +466,24 @@
     master.out.connect(ctx.destination);
     const anySolo = p.tracks.some(t => t.solo);
     const entries = new Map();
-    for (const [id, buf] of opts.buffers) entries.set(id, { buf, rev: null });
+    for (const [id, buf] of opts.buffers) entries.set(id, { buf, rev: null, mono: opts.monos ? opts.monos.get(id) : null });
     const tracks = p.tracks.filter(t => opts.trackIds ? opts.trackIds.includes(t.id) : (!t.mute && (!anySolo || t.solo)));
+    if (tracks.some(t => t.sound && t.sound.mode === 'spectral')) {
+      await SP.Spectral.prepare(ctx);
+      const used = new Set(); for (const t of tracks) for (const e of t.events) used.add(e.sampleId);
+      for (const id of used) { const e = entries.get(id); if (e) await SP.Spectral.load(ctx, id, monoOf(e), e.buf.sampleRate); }
+    }
+    const hooks = { scatterPick: opts.scatterPick, cellEdit: opts.cellEdit, spectralSources: opts.spectralSources, spb: () => spb };
     for (const tr of tracks) {
       const st = new Strip(ctx, master.input);
       st.update(tr, p.bpm, true);
+      if (opts.cellEdit) for (const ev of tr.events) { const ed = opts.cellEdit(ev.sampleId, ev.frame); if (ed) st.cellInput(ev.sampleId + ':' + ev.frame, ed.effects, p.bpm); }
       for (let rep = 0; rep < (opts.repeats || 1); rep++) {
         const t0 = rep * span;
         st.scheduleFx(t0, opts.b0, opts.b1, spb);
         for (const ev of tr.events) {
           if (ev.t < opts.b0 || ev.t >= opts.b1) continue;
-          const entry = entries.get(ev.sampleId); if (!entry) continue;
-          let hit = ev;
-          const s = st.sound;
-          const r = SP.hash01(ev.id, rep);
-          if (s.scatter > 0 && opts.scatterPick && r < s.scatter) { const alt = opts.scatterPick(ev.sampleId, ev.start, ev.end, SP.hash01(String(r), 3)); if (alt) hit = Object.assign({}, ev, alt); }
-          playFrame(ctx, st, entry, hit, t0 + (ev.t - opts.b0) * spb, ev.len * spb, null);
+          triggerOn(ctx, st, entries, ev, t0 + (ev.t - opts.b0) * spb, ev.len * spb, SP.hash01(ev.id, rep), hooks, null);
         }
       }
       if (opts.tail) st.scheduleFx(span * (opts.repeats || 1), opts.b1, opts.b1 + opts.tail / spb, spb);
