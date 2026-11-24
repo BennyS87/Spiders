@@ -1,0 +1,71 @@
+{
+  "name": "spiders-resampler",
+  "productName": "Spiders",
+  "version": "1.0.0",
+  "description": "Spiders - a spectral resampler that breaks a sound into cells of timbre you can play, record and arrange",
+  "main": "main.js",
+  "author": "Ben Skirth",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac --publish never",
+    "dist:win": "electron-builder --win --publish never"
+  },
+  "build": {
+    "appId": "com.benskirth.spiders",
+    "productName": "Spiders",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "package.json"
+    ],
+    "fileAssociations": [
+      {
+        "ext": "spiders",
+        "name": "Spiders Project",
+        "role": "Editor"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] },
+        { "target": "zip", "arch": ["x64", "arm64"] }
+      ],
+      "icon": "build/icon.png",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Spiders does not record from the microphone."
+      }
+    },
+    "dmg": {
+      "artifactName": "Spiders-${version}-mac-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Spiders-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Spiders-Portable-${version}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.3.2",
+    "electron-builder": "^26.0.0"
+  }
+}
