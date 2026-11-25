@@ -11,6 +11,7 @@ Spiders sits alongside Reel Studio and Orbit and uses the same effects.
 | To | Do this |
 |---|---|
 | Import sounds | **+ Import** (⌘I), or drop WAV, MP3, AIFF, FLAC, OGG, M4A or MIDI files on the window. A project can hold as many sounds as you like. MIDI files are played through built-in sounds first, then mapped like audio. |
+| Record a sound | **● Record** next to Import (⌘⇧R), or **Record a sound** on the welcome screen. Choose a **Source**: **Microphone / interface** (pick the input, Mono or Stereo, and optionally hear the input), or **Spiders' own output** to resample whatever Spiders is playing. **Free** timing records the moment you press Record. **In time with the song** gives a one-bar count-in with the metronome, then records from the downbeat (at the loop start) for 1–16 bars or until you press Stop. Afterwards you can trim the take (or use **Trim silence**), play it back, normalise it and name it, then press **Add to project**. It's mapped like any imported sound. Takes recorded in time are sliced on the beat. On a Mac, the first time you record, macOS asks to let Spiders use the microphone. |
 | Try it without a file | **Try the demo sound** on the welcome screen. |
 | Read the map | Every cell is one frame (a slice of the sound). The colour is its timbre group, ordered dark (violet) to bright (amber). The shape inside each cell is that frame's spectrum: lows at the top, going round clockwise. Brighter cells are louder. In **Web** layout each group gets a wedge and time spirals out from the centre; in **Map** layout similar sounds sit close together. |
 | Play frames | Click a cell, or drag across the map to strum through cells. Click or drag along the strip under the map to play the sound in time order. |
@@ -49,8 +50,8 @@ GitHub Actions builds the apps on GitHub's own Mac and Windows machines, so you 
    ```
    (Or use GitHub Desktop and choose *Add Existing Repository* for this folder.)
 3. Open the **Actions** tab. The *Build Spiders* workflow builds both apps in about 5–10 minutes. Open the finished run and download them under **Artifacts**:
-   - `Spiders-mac`: `Spiders-1.1.0-mac-arm64.dmg` (Apple Silicon) and `Spiders-1.1.0-mac-x64.dmg` (Intel)
-   - `Spiders-win`: `Spiders-Setup-1.1.0.exe` (installer) and `Spiders-Portable-1.1.0.exe`
+   - `Spiders-mac`: `Spiders-1.2.0-mac-arm64.dmg` (Apple Silicon) and `Spiders-1.2.0-mac-x64.dmg` (Intel)
+   - `Spiders-win`: `Spiders-Setup-1.2.0.exe` (installer) and `Spiders-Portable-1.2.0.exe`
 4. **To publish a release** with download links on the repo's Releases page, push a version tag:
    ```bash
    git tag v1.0.0
@@ -101,6 +102,7 @@ src/js/timeline.js           Tracks and note editing
 src/js/panels.js             Sound library, Pads / Sound / Effects panels
 src/js/knob.js               Knob control (shared design with Orbit)
 src/js/exporters.js          WAV / MP3 / MIDI writers
+src/js/recorder.js           Recording from a mic, interface or Spiders' own output
 src/js/app.js                App state, undo, import, keyboard and MIDI input, recording, files, export
 .github/workflows/build.yml  GitHub Actions: Mac + Windows builds and releases
 ```

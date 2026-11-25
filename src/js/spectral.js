@@ -178,6 +178,38 @@
       }
     }
     registerProcessor('spiders-spectral', Spectral);
+
+    // captures whatever is connected to its input and posts it in chunks, stamped with the context time
+    class Recorder extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        this.on = false; this.l = []; this.r = []; this.n = 0; this.t0 = 0;
+        this.port.onmessage = (e) => {
+          if (e.data.type === 'start') { this.on = true; this.n = 0; this.l = []; this.r = []; }
+          else if (e.data.type === 'stop') { this.flush(); this.on = false; this.port.postMessage({ type: 'stopped' }); }
+        };
+      }
+      flush() {
+        if (!this.n) return;
+        const L = new Float32Array(this.n), R = new Float32Array(this.n);
+        let o = 0;
+        for (let i = 0; i < this.l.length; i++) { L.set(this.l[i], o); R.set(this.r[i], o); o += this.l[i].length; }
+        this.port.postMessage({ type: 'data', t: this.t0, l: L, r: R, ch: this.ch }, [L.buffer, R.buffer]);
+        this.l = []; this.r = []; this.n = 0;
+      }
+      process(inputs) {
+        if (!this.on) return true;
+        const inp = inputs[0];
+        if (!this.n) this.t0 = currentTime;
+        let L, R;
+        if (inp && inp.length) { L = inp[0].slice(); R = (inp[1] || inp[0]).slice(); this.ch = inp.length; }
+        else { L = new Float32Array(128); R = new Float32Array(128); }
+        this.l.push(L); this.r.push(R); this.n += L.length;
+        if (this.n >= 4096) this.flush();
+        return true;
+      }
+    }
+    registerProcessor('spiders-recorder', Recorder);
   }
 
   const src = '(' + processorSource.toString() + ')();';

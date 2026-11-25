@@ -349,12 +349,13 @@
     }
     stop() {
       if (!this.playing) return;
-      this.posBeat = this.beatNow();
+      this.posBeat = Math.max(0, this.beatNow());
       this.playing = false;
       const t = this.ctx.currentTime;
       for (const v of this.voices.slice()) if (v.when > t || !v.live) v.kill(t);
       for (const [, st] of this.strips) st.resetFx(t);
       this.freeTime = t; this.freeBeat = 0;
+      if (this.onStopRecorder) this.onStopRecorder();
       if (this.onStop) this.onStop();
     }
     locate(beat) {
@@ -431,7 +432,7 @@
           this.trigger(tr, st, ev, when, ev.len * spb, SP.hash01(ev.id, this.pass));
         }
       }
-      if (p.metronome) {
+      if (p.metronome || this.forceClick) {
         for (let b = Math.ceil(b0 - 1e-9); b < b1; b++) click(this.ctx, this.clickBus, t0 + (b - b0) * spb, b % p.beatsPerBar === 0);
       }
     }

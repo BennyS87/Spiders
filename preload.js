@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('spidersNative', {
   setTitle: (t) => ipcRenderer.send('set-title', t),
   closeNow: () => ipcRenderer.send('close-now'),
   reveal: (p) => ipcRenderer.send('reveal', p),
+  askMic: () => ipcRenderer.invoke('ask-mic'),
+  openMicSettings: () => ipcRenderer.send('open-mic-settings'),
   onMenu: (cb) => ipcRenderer.on('menu', (_e, cmd) => cb(cmd)),
   onOpenProject: (cb) => ipcRenderer.on('open-project', (_e, payload) => cb(payload))
 });

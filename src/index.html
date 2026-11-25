@@ -44,7 +44,7 @@
 
     <main>
       <aside class="library">
-        <div class="side-head"><h3>Sounds</h3><button id="importBtn" class="small">+ Import</button></div>
+        <div class="side-head"><h3>Sounds</h3><span><button id="recSoundBtn" class="small rec" title="Record from a microphone or audio interface, or resample Spiders itself (⌘⇧R)">● Record</button> <button id="importBtn" class="small">+ Import</button></span></div>
         <div id="sampleList" class="scroll"></div>
         <div id="libDetail" class="scroll" style="flex:1"></div>
       </aside>
@@ -59,7 +59,7 @@
               <img src="icon.png" alt="">
               <h2>Spin a sound into a web</h2>
               <p>Drop a WAV, MP3 or MIDI file here. Spiders slices it into frames, groups them by timbre and lays them out as cells you can play from the map, your keyboard or a MIDI keyboard.</p>
-              <div class="btns"><button class="accent" id="welcomeImport">Import a sound…</button><button id="welcomeDemo">Try the demo sound</button></div>
+              <div class="btns"><button class="accent" id="welcomeImport">Import a sound…</button><button id="welcomeRecord">● Record a sound</button><button id="welcomeDemo">Try the demo sound</button></div>
             </div>
           </div>
         </div>
@@ -117,6 +117,7 @@
   <script src="js/mapview.js"></script>
   <script src="js/timeline.js"></script>
   <script src="js/panels.js"></script>
+  <script src="js/recorder.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

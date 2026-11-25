@@ -534,7 +534,7 @@
 
   // ---------------- import & analysis ----------------
   const AUDIO_RE = /\.(wav|wave|mp3|aif|aiff|flac|ogg|oga|m4a|aac|mp4|webm)$/i, MIDI_RE = /\.(mid|midi|smf)$/i;
-  app.importFiles = async (files) => {
+  app.importFiles = async (files, opts) => {
     let added = 0;
     for (const f of files) {
       const isMidi = MIDI_RE.test(f.name);
@@ -542,6 +542,7 @@
       const id = SP.uid('smp');
       const meta = { id, name: f.name.replace(/\.[^.]+$/, ''), kind: isMidi ? 'midi' : 'audio', settings: Object.assign({}, DEFAULT_SETTINGS) };
       if (isMidi) meta.settings.mode = 'transients';
+      if (opts && opts.settings) Object.assign(meta.settings, opts.settings);
       meta._busy = true; meta._progress = 0;
       app.project.samples.push(meta);
       app.project.selectedSample = id;
@@ -981,7 +982,7 @@
     if (mod) {
       if (native) return; // the app menu handles these
       const k = e.key.toLowerCase();
-      const acts = { z: () => (e.shiftKey ? app.redo() : app.undo()), s: () => app.save(e.shiftKey), o: () => app.open(), e: () => app.openExport(), d: () => app.timeline.duplicateSelected(), r: () => app.toggleRecord(), l: () => toggleLoop(), k: () => toggleMetro(), t: () => app.addTrack(), u: () => app.timeline.quantize(), a: () => app.timeline.selectAll(), i: () => importDialog(), c: () => app.copy(), v: () => app.paste() };
+      const acts = { z: () => (e.shiftKey ? app.redo() : app.undo()), s: () => app.save(e.shiftKey), o: () => app.open(), e: () => app.openExport(), d: () => app.timeline.duplicateSelected(), r: () => (e.shiftKey ? SP.Recorder.open() : app.toggleRecord()), l: () => toggleLoop(), k: () => toggleMetro(), t: () => app.addTrack(), u: () => app.timeline.quantize(), a: () => app.timeline.selectAll(), i: () => importDialog(), c: () => app.copy(), v: () => app.paste() };
       if (acts[k]) { e.preventDefault(); acts[k](); }
       return;
     }
@@ -1067,6 +1068,8 @@
     $('saveBtn').onclick = () => app.save(false);
     $('exportBtn').onclick = app.openExport;
     $('importBtn').onclick = importDialog;
+    $('recSoundBtn').onclick = () => SP.Recorder.open();
+    $('welcomeRecord').onclick = () => SP.Recorder.open();
     $('welcomeImport').onclick = importDialog;
     $('welcomeDemo').onclick = () => app.loadDemo();
     $('addTrackBtn').onclick = app.addTrack;
@@ -1111,7 +1114,7 @@
           new: app.newProject, open: app.open, save: () => app.save(false), 'save-as': () => app.save(true), export: app.openExport, import: importDialog,
           undo: app.undo, redo: app.redo, duplicate: () => app.timeline.duplicateSelected(), quantize: () => app.timeline.quantize(), 'select-all': () => app.timeline.selectAll(),
           'toggle-play': app.togglePlay, record: app.toggleRecord, home: app.home, loop: toggleLoop, metronome: toggleMetro,
-          'add-track': app.addTrack, 'duplicate-track': () => app.duplicateTrack(), 'delete-track': () => app.deleteTrack(),
+          'add-track': app.addTrack, 'record-sound': () => SP.Recorder.open(), 'duplicate-track': () => app.duplicateTrack(), 'delete-track': () => app.deleteTrack(),
           'save-then-close': async () => { if (await app.save(false)) native.closeNow(); }
         };
         if (acts[cmd]) acts[cmd]();

@@ -238,3 +238,20 @@ body.dragover .mapwrap::after { content: 'Drop sounds to map them'; position: ab
 .cellctl { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .cellctl .knob { width: 70px; }
 .cellfx { margin-top: 8px; }
+
+/* ---------------- sound recorder ---------------- */
+button.rec { color: var(--rec); }
+.modal.recmodal { width: 680px; }
+.recrow { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+.recrow > label { width: 92px; color: var(--dim); font-size: 11px; flex: none; }
+.recrow select { min-width: 220px; }
+.inmeter { flex: 1; height: 10px; border-radius: 5px; background: #0a0c10; border: 1px solid var(--line); overflow: hidden; position: relative; min-width: 160px; }
+.inmeter i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: linear-gradient(90deg, #3cf0b4, #f2e35c 75%, #ff3b4e); }
+.inmeter b { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; left: 0; }
+.recwave { width: 100%; height: 130px; display: block; border-radius: 8px; border: 1px solid var(--line); background: #0a0c10; margin: 10px 0 6px; }
+.recbig { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+.recbig .clock { font-family: var(--mono); font-size: 22px; color: var(--silk); min-width: 110px; }
+.recbig .state { color: var(--dim); flex: 1; }
+#recGo { background: var(--rec); border-color: var(--rec); color: #fff; font-weight: 700; padding: 8px 16px; }
+#recGo.stop { background: var(--silk); border-color: var(--silk); color: #0b0d12; }
+.recnote { color: var(--warn); font-size: 11px; line-height: 1.5; }

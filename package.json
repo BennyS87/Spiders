@@ -1,7 +1,7 @@
 {
   "name": "spiders-resampler",
   "productName": "Spiders",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Spiders - a spectral resampler that breaks a sound into cells of timbre you can play, record and arrange",
   "main": "main.js",
   "author": "Ben Skirth",
@@ -42,7 +42,7 @@
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Spiders does not record from the microphone."
+        "NSMicrophoneUsageDescription": "Spiders records sounds from your microphone or audio interface when you choose Record."
       }
     },
     "dmg": {

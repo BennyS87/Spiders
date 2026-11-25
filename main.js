@@ -1,5 +1,5 @@
 // Spiders - Electron main process
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell, session } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, session, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -68,6 +68,7 @@ function buildMenu() {
         { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
         { type: 'separator' },
         { label: 'Import Sound…', accelerator: 'CmdOrCtrl+I', click: () => send('import') },
+        { label: 'Record a Sound…', accelerator: 'CmdOrCtrl+Shift+R', click: () => send('record-sound') },
         { type: 'separator' },
         { label: 'Save Project', accelerator: 'CmdOrCtrl+S', click: () => send('save') },
         { label: 'Save Project As…', accelerator: 'CmdOrCtrl+Shift+S', click: () => send('save-as') },
@@ -182,6 +183,18 @@ ipcMain.handle('confirm', async (_e, { message, detail, buttons }) => {
   return r.response;
 });
 
+// macOS microphone permission: ask the system once, report the status
+ipcMain.handle('ask-mic', async () => {
+  if (process.platform !== 'darwin') return 'granted';
+  let st = systemPreferences.getMediaAccessStatus('microphone');
+  if (st === 'not-determined') st = (await systemPreferences.askForMediaAccess('microphone')) ? 'granted' : 'denied';
+  return st;
+});
+ipcMain.on('open-mic-settings', () => {
+  if (process.platform === 'darwin') shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+  else if (process.platform === 'win32') shell.openExternal('ms-settings:privacy-microphone');
+});
+
 ipcMain.on('set-dirty', (_e, dirty) => { isDirty = !!dirty; });
 ipcMain.on('set-title', (_e, title) => { if (win) win.setTitle(title); });
 ipcMain.on('close-now', () => { forceClose = true; if (win) win.close(); });
@@ -197,8 +210,9 @@ const argFile = process.argv.find(a => a.endsWith('.spiders'));
 if (argFile) pendingOpenPath = argFile;
 
 app.whenReady().then(() => {
-  // Allow Web MIDI (MIDI keyboards) without a prompt
-  const allow = new Set(['midi', 'midiSysex']);
+  // Allow Web MIDI (MIDI keyboards) and audio input (recording) without a browser prompt.
+  // On macOS the system still asks once for microphone access (see 'ask-mic').
+  const allow = new Set(['midi', 'midiSysex', 'media', 'audioCapture']);
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(allow.has(permission)));
   session.defaultSession.setPermissionCheckHandler((_wc, permission) => allow.has(permission));
   createWindow();
